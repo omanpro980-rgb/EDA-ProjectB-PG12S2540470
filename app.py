@@ -80,293 +80,280 @@ st.set_page_config(
 
 # ---- Theme + typography --------------------------------------------------
 st.markdown(
-    """
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <style>
-      /* ---------- App-wide theme ---------- */
-      .stApp {
-        background:
-          radial-gradient(1200px 600px at 10% -10%, rgba(99, 102, 241, 0.18), transparent 60%),
-          radial-gradient(900px 500px at 100% 10%, rgba(14, 165, 233, 0.14), transparent 60%),
-          linear-gradient(180deg, #0b1226 0%, #0a0f1f 60%, #07091a 100%) !important;
-        color: #e6edf7;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        font-size: 17px;
-        line-height: 1.55;
-      }
-      .block-container { padding-top: 1.2rem; max-width: 1280px; }
+    """<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-      /* Headings */
-      h1, h2, h3, h4 {
-        font-family: 'Inter', sans-serif !important;
-        font-weight: 700 !important;
-        letter-spacing: -0.3px !important;
-        color: #f4f7ff !important;
-      }
-      h1 { font-size: 2.1rem !important; }
-      h2 { font-size: 1.55rem !important; }
-      h3 { font-size: 1.2rem !important; }
-      p, label, .stMarkdown { font-size: 1rem; color: #cbd5e1; }
-      .stCaption, .caption { color: #94a3b8 !important; font-size: 0.92rem !important; }
+/* ---------- App-wide theme ---------- */
+.stApp {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(99, 102, 241, 0.18), transparent 60%),
+    radial-gradient(900px 500px at 100% 10%, rgba(14, 165, 233, 0.14), transparent 60%),
+    linear-gradient(180deg, #0b1226 0%, #0a0f1f 60%, #07091a 100%) !important;
+  color: #e6edf7;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 17px;
+  line-height: 1.55;
+}
+.block-container { padding-top: 1.2rem; max-width: 1280px; }
 
-      /* Monospace */
-      code, pre, .stCodeBlock, [data-testid="stCodeBlock"] {
-        font-family: 'JetBrains Mono', monospace !important;
-        font-size: 0.9rem !important;
-      }
+/* Headings */
+h1, h2, h3, h4 {
+  font-family: 'Inter', sans-serif !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.3px !important;
+  color: #f4f7ff !important;
+}
+h1 { font-size: 2.1rem !important; }
+h2 { font-size: 1.55rem !important; }
+h3 { font-size: 1.2rem !important; }
+p, label, .stMarkdown { font-size: 1rem; color: #cbd5e1; }
+.stCaption, .caption { color: #94a3b8 !important; font-size: 0.92rem !important; }
 
-      /* ---------- Metric cards ---------- */
-      .stMetric {
-        background: linear-gradient(135deg, rgba(30, 41, 73, 0.85) 0%, rgba(15, 23, 42, 0.85) 100%);
-        padding: 1rem 1.15rem;
-        border-radius: 16px;
-        border: 1px solid rgba(99, 102, 241, 0.18);
-        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-        transition: transform 0.18s ease, border-color 0.18s ease;
-      }
-      .stMetric:hover {
-        transform: translateY(-2px);
-        border-color: rgba(99, 102, 241, 0.45);
-      }
-      .stMetric label, .stMetric [data-testid="stMetricLabel"] {
-        color: #93c5fd !important;
-        font-weight: 600 !important;
-        font-size: 0.78rem !important;
-        text-transform: uppercase;
-        letter-spacing: 0.6px;
-      }
-      .stMetric [data-testid="stMetricValue"] {
-        color: #f9fafb !important;
-        font-size: 1.55rem !important;
-        font-weight: 700 !important;
-      }
-      .stMetric [data-testid="stMetricDelta"] { font-size: 0.85rem !important; }
+/* Monospace */
+code, pre, .stCodeBlock, [data-testid="stCodeBlock"] {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 0.9rem !important;
+}
 
-      /* ---------- Section banners ---------- */
-      .section-banner {
-        background: linear-gradient(90deg, rgba(99, 102, 241, 0.95) 0%, rgba(168, 85, 247, 0.95) 50%, rgba(236, 72, 153, 0.95) 100%);
-        color: white;
-        padding: 16px 22px;
-        border-radius: 14px;
-        font-weight: 700;
-        font-size: 1.22rem;
-        margin: 16px 0 18px 0;
-        box-shadow: 0 10px 30px rgba(99, 102, 241, 0.28);
-        letter-spacing: 0.2px;
-        display: flex;
-        align-items: center;
-        gap: 14px;
-      }
-      .section-banner .num {
-        background: rgba(255, 255, 255, 0.18);
-        border-radius: 10px;
-        padding: 4px 12px;
-        font-size: 0.95rem;
-        font-weight: 700;
-        min-width: 30px;
-        text-align: center;
-      }
-      .section-banner .body { flex: 1; }
-      .section-banner .subtitle {
-        display: block;
-        font-weight: 400;
-        font-size: 0.88rem;
-        opacity: 0.92;
-        margin-top: 3px;
-      }
+/* ---------- Metric cards ---------- */
+.stMetric {
+  background: linear-gradient(135deg, rgba(30, 41, 73, 0.85) 0%, rgba(15, 23, 42, 0.85) 100%);
+  padding: 1rem 1.15rem;
+  border-radius: 16px;
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: transform 0.18s ease, border-color 0.18s ease;
+}
+.stMetric:hover { transform: translateY(-2px); border-color: rgba(99, 102, 241, 0.45); }
+.stMetric label, .stMetric [data-testid="stMetricLabel"] {
+  color: #93c5fd !important;
+  font-weight: 600 !important;
+  font-size: 0.78rem !important;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.stMetric [data-testid="stMetricValue"] {
+  color: #f9fafb !important;
+  font-size: 1.55rem !important;
+  font-weight: 700 !important;
+}
+.stMetric [data-testid="stMetricDelta"] { font-size: 0.85rem !important; }
 
-      /* ---------- Top nav pills ---------- */
-      .top-nav {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        padding: 10px 14px;
-        background: rgba(15, 23, 42, 0.55);
-        border: 1px solid rgba(99, 102, 241, 0.18);
-        border-radius: 14px;
-        margin-bottom: 14px;
-        backdrop-filter: blur(8px);
-      }
-      .top-nav a {
-        text-decoration: none !important;
-        color: #cbd5e1 !important;
-        font-size: 0.85rem;
-        font-weight: 600;
-        padding: 6px 12px;
-        border-radius: 999px;
-        background: rgba(148, 163, 184, 0.08);
-        border: 1px solid transparent;
-        transition: all 0.15s ease;
-      }
-      .top-nav a:hover {
-        color: #f4f7ff !important;
-        background: rgba(99, 102, 241, 0.25);
-        border-color: rgba(99, 102, 241, 0.45);
-      }
+/* ---------- Section banners ---------- */
+.section-banner {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.95) 0%, rgba(168, 85, 247, 0.95) 50%, rgba(236, 72, 153, 0.95) 100%);
+  color: white;
+  padding: 16px 22px;
+  border-radius: 14px;
+  font-weight: 700;
+  font-size: 1.22rem;
+  margin: 16px 0 18px 0;
+  box-shadow: 0 10px 30px rgba(99, 102, 241, 0.28);
+  letter-spacing: 0.2px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.section-banner .num {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  padding: 4px 12px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  min-width: 30px;
+  text-align: center;
+}
+.section-banner .body { flex: 1; }
+.section-banner .subtitle {
+  display: block;
+  font-weight: 400;
+  font-size: 0.88rem;
+  opacity: 0.92;
+  margin-top: 3px;
+}
 
-      /* ---------- Pills / badges ---------- */
-      .pill {
-        display: inline-block;
-        padding: 5px 12px;
-        border-radius: 999px;
-        font-size: 0.8rem;
-        font-weight: 600;
-        margin: 2px 6px 2px 0;
-        font-family: 'Inter', sans-serif;
-      }
-      .pill-ok { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.35); }
-      .pill-warn { background: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.35); }
-      .pill-info { background: rgba(59, 130, 246, 0.14); color: #60a5fa; border: 1px solid rgba(59,130,246,0.35); }
+/* ---------- Top nav pills ---------- */
+.top-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  border-radius: 14px;
+  margin-bottom: 14px;
+}
+.top-nav a {
+  text-decoration: none !important;
+  color: #cbd5e1 !important;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+}
+.top-nav a:hover {
+  color: #f4f7ff !important;
+  background: rgba(99, 102, 241, 0.25);
+  border-color: rgba(99, 102, 241, 0.45);
+}
 
-      /* ---------- Tabs ---------- */
-      .stTabs [data-baseweb="tab-list"] {
-        gap: 4px;
-        background: rgba(15, 23, 42, 0.5);
-        padding: 6px;
-        border-radius: 12px;
-        border: 1px solid rgba(99, 102, 241, 0.15);
-      }
-      .stTabs [data-baseweb="tab"] {
-        font-weight: 600 !important;
-        padding: 8px 16px !important;
-        border-radius: 8px !important;
-        font-size: 0.95rem !important;
-        color: #94a3b8 !important;
-      }
-      .stTabs [data-baseweb="tab"][aria-selected="true"] {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.4), rgba(168, 85, 247, 0.4)) !important;
-        color: #f4f7ff !important;
-      }
+/* ---------- Pills / badges ---------- */
+.pill {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 2px 6px 2px 0;
+  font-family: 'Inter', sans-serif;
+}
+.pill-ok { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.35); }
+.pill-warn { background: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.35); }
+.pill-info { background: rgba(59, 130, 246, 0.14); color: #60a5fa; border: 1px solid rgba(59,130,246,0.35); }
 
-      /* ---------- Buttons ---------- */
-      .stButton button {
-        font-weight: 600 !important;
-        border-radius: 10px !important;
-        font-size: 0.95rem !important;
-        transition: transform 0.12s ease, box-shadow 0.12s ease;
-      }
-      .stButton button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 20px rgba(99, 102, 241, 0.3);
-      }
-      .stButton button[kind="primary"] {
-        background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%) !important;
-        border: none !important;
-      }
-      .stDownloadButton button {
-        background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(34, 197, 94, 0.2)) !important;
-        border: 1px solid rgba(16, 185, 129, 0.4) !important;
-        color: #34d399 !important;
-        font-weight: 600 !important;
-      }
+/* ---------- Tabs ---------- */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 4px;
+  background: rgba(15, 23, 42, 0.5);
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(99, 102, 241, 0.15);
+}
+.stTabs [data-baseweb="tab"] {
+  font-weight: 600 !important;
+  padding: 8px 16px !important;
+  border-radius: 8px !important;
+  font-size: 0.95rem !important;
+  color: #94a3b8 !important;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.4), rgba(168, 85, 247, 0.4)) !important;
+  color: #f4f7ff !important;
+}
 
-      /* ---------- Inputs ---------- */
-      .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div, .stNumberInput input {
-        background: rgba(15, 23, 42, 0.6) !important;
-        border: 1px solid rgba(99, 102, 241, 0.2) !important;
-        border-radius: 10px !important;
-        color: #e6edf7 !important;
-      }
-      .stTextInput input:focus, .stTextArea textarea:focus {
-        border-color: rgba(99, 102, 241, 0.6) !important;
-      }
-      .stSlider [data-baseweb="slider"] [role="slider"] {
-        background: linear-gradient(135deg, #6366f1, #a855f7) !important;
-      }
+/* ---------- Buttons ---------- */
+.stButton button {
+  font-weight: 600 !important;
+  border-radius: 10px !important;
+  font-size: 0.95rem !important;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.stButton button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.3);
+}
+.stButton button[kind="primary"] {
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%) !important;
+  border: none !important;
+}
+.stDownloadButton button {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(34, 197, 94, 0.2)) !important;
+  border: 1px solid rgba(16, 185, 129, 0.4) !important;
+  color: #34d399 !important;
+  font-weight: 600 !important;
+}
 
-      /* ---------- Expanders ---------- */
-      .streamlit-expanderHeader, [data-testid="stExpander"] summary {
-        background: rgba(15, 23, 42, 0.5) !important;
-        border-radius: 10px !important;
-        font-weight: 600 !important;
-        font-size: 1rem !important;
-        color: #cbd5e1 !important;
-      }
-      [data-testid="stExpander"] {
-        border: 1px solid rgba(99, 102, 241, 0.15) !important;
-        border-radius: 12px !important;
-      }
+/* ---------- Inputs ---------- */
+.stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] > div, .stNumberInput input {
+  background: rgba(15, 23, 42, 0.6) !important;
+  border: 1px solid rgba(99, 102, 241, 0.2) !important;
+  border-radius: 10px !important;
+  color: #e6edf7 !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus { border-color: rgba(99, 102, 241, 0.6) !important; }
+.stSlider [data-baseweb="slider"] [role="slider"] {
+  background: linear-gradient(135deg, #6366f1, #a855f7) !important;
+}
 
-      /* ---------- DataFrames ---------- */
-      .stDataFrame { border-radius: 12px; overflow: hidden; border: 1px solid rgba(99, 102, 241, 0.15); }
+/* ---------- Expanders ---------- */
+.streamlit-expanderHeader, [data-testid="stExpander"] summary {
+  background: rgba(15, 23, 42, 0.5) !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  font-size: 1rem !important;
+  color: #cbd5e1 !important;
+}
+[data-testid="stExpander"] {
+  border: 1px solid rgba(99, 102, 241, 0.15) !important;
+  border-radius: 12px !important;
+}
 
-      /* ---------- Sidebar ---------- */
-      [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, rgba(11, 18, 38, 0.95) 0%, rgba(7, 9, 26, 0.95) 100%) !important;
-        border-right: 1px solid rgba(99, 102, 241, 0.15);
-      }
+/* ---------- DataFrames ---------- */
+.stDataFrame { border-radius: 12px; overflow: hidden; border: 1px solid rgba(99, 102, 241, 0.15); }
 
-      /* ---------- Progress bar ---------- */
-      .stProgress > div > div > div { background: linear-gradient(90deg, #6366f1, #ec4899) !important; }
+/* ---------- Sidebar ---------- */
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, rgba(11, 18, 38, 0.95) 0%, rgba(7, 9, 26, 0.95) 100%) !important;
+  border-right: 1px solid rgba(99, 102, 241, 0.15);
+}
 
-      /* ---------- Alerts ---------- */
-      [data-testid="stAlert"] { border-radius: 12px !important; }
+/* ---------- Progress bar ---------- */
+.stProgress > div > div > div { background: linear-gradient(90deg, #6366f1, #ec4899) !important; }
 
-      /* ---------- Flow / block diagram boxes ---------- */
-      .flow-card {
-        background: rgba(15, 23, 42, 0.6);
-        border: 1px solid rgba(99, 102, 241, 0.2);
-        border-radius: 14px;
-        padding: 14px 18px;
-        margin: 8px 0;
-      }
-      .flow-step {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 8px 14px;
-        border-radius: 10px;
-        font-weight: 600;
-        font-size: 0.9rem;
-        margin: 4px;
-        background: rgba(148, 163, 184, 0.08);
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        color: #94a3b8;
-        transition: all 0.2s ease;
-      }
-      .flow-step.active {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(168, 85, 247, 0.35));
-        border-color: rgba(168, 85, 247, 0.6);
-        color: #f4f7ff;
-        box-shadow: 0 4px 18px rgba(99, 102, 241, 0.4);
-      }
-      .flow-step.done {
-        background: rgba(16, 185, 129, 0.15);
-        border-color: rgba(16, 185, 129, 0.4);
-        color: #34d399;
-      }
-      .flow-arrow {
-        color: #475569;
-        font-size: 1.2rem;
-        margin: 0 4px;
-      }
+/* ---------- Alerts ---------- */
+[data-testid="stAlert"] { border-radius: 12px !important; }
 
-      /* ---------- Hero ---------- */
-      .hero-title {
-        font-size: 2.6rem;
-        font-weight: 800;
-        background: linear-gradient(90deg, #60a5fa 0%, #a855f7 50%, #ec4899 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        letter-spacing: -1px;
-        text-align: center;
-        margin: 0;
-        padding-top: 8px;
-      }
-      .hero-sub {
-        color: #94a3b8;
-        text-align: center;
-        font-size: 1.02rem;
-        margin-top: 6px;
-      }
+/* ---------- Flow / block diagram boxes ---------- */
+.flow-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 14px;
+  padding: 14px 18px;
+  margin: 8px 0;
+}
+.flow-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin: 4px;
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+  transition: all 0.2s ease;
+}
+.flow-step.active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(168, 85, 247, 0.35));
+  border-color: rgba(168, 85, 247, 0.6);
+  color: #f4f7ff;
+  box-shadow: 0 4px 18px rgba(99, 102, 241, 0.4);
+}
+.flow-step.done {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+.flow-arrow { color: #475569; font-size: 1.2rem; margin: 0 4px; }
 
-      /* ---------- Plotly chart container ---------- */
-      .js-plotly-plot, .plotly { border-radius: 12px; }
-    </style>
-    """,
+/* ---------- Hero ---------- */
+.hero-title {
+  font-size: 2.6rem;
+  font-weight: 800;
+  background: linear-gradient(90deg, #60a5fa 0%, #a855f7 50%, #ec4899 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: -1px;
+  text-align: center;
+  margin: 0;
+  padding-top: 8px;
+}
+.hero-sub {
+  color: #94a3b8;
+  text-align: center;
+  font-size: 1.02rem;
+  margin-top: 6px;
+}
+
+/* ---------- Plotly chart container ---------- */
+.js-plotly-plot, .plotly { border-radius: 12px; }
+</style>""",
     unsafe_allow_html=True,
 )
 
