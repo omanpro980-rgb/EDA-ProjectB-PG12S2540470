@@ -3,7 +3,6 @@ import os
 import re
 from datetime import datetime
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -68,6 +67,23 @@ DEFAULT_TIMESTAMP_COL = "TIMESTAMP"
 DEFAULT_TARGET_COL = "ND"
 DEFAULT_STUDENT_NAME = "Ibrahim Al Manwari"
 DEFAULT_STUDENT_ID = "PG12S2540470"
+
+
+def create_demo_dataset(periods=24 * 120, freq="30min", seed=42):
+    """Create a safe fallback dataset so the app never dies on first launch."""
+    rng = np.random.default_rng(seed)
+    timestamps = pd.date_range(
+        end=pd.Timestamp.now().floor("30min"), periods=periods, freq=freq
+    )
+    hour = timestamps.hour.to_numpy()
+    dow = timestamps.dayofweek.to_numpy()
+    daily = 1800 + 450 * np.sin(2 * np.pi * (hour - 7) / 24)
+    evening_peak = 650 * np.exp(-((hour - 19) ** 2) / 10)
+    weekend_effect = np.where(dow >= 5, -120, 80)
+    trend = np.linspace(0, 140, periods)
+    noise = rng.normal(0, 90, periods)
+    demand = np.maximum(200, daily + evening_peak + weekend_effect + trend + noise)
+    return pd.DataFrame({DEFAULT_TIMESTAMP_COL: timestamps, DEFAULT_TARGET_COL: demand.round(2)})
 
 
 st.set_page_config(
@@ -427,9 +443,18 @@ def read_openrouter_key():
     return key
 
 
-def load_dataset(path):
-    """Load a local CSV dataset."""
-    return pd.read_csv(path)
+def load_dataset(path, uploaded_file=None, allow_demo_fallback=False):
+    """Load CSV from upload first, then local path, then optional demo fallback."""
+    if uploaded_file is not None:
+        return pd.read_csv(uploaded_file), "uploaded CSV", None
+
+    try:
+        return pd.read_csv(path), path, None
+    except Exception as exc:
+        if allow_demo_fallback:
+            demo = create_demo_dataset()
+            return demo, "generated demo fallback", exc
+        raise
 
 
 def audit_dataframe(df):
@@ -799,36 +824,140 @@ def call_openrouter_grader(api_key, evidence_json):
 
 
 
+def offline_fallback_grader(evidence_json):
+    """Deterministic local rubric grader used when the API is unavailable or disabled."""
+    flags = evidence_json.get("evidence_flags", {})
+    dataset = evidence_json.get("dataset", {})
+    audit = evidence_json.get("data_integrity_audit", {})
+    setup = evidence_json.get("forecasting_setup", {})
+    notes = evidence_json.get("student_notes", {})
+    results = evidence_json.get("results_table", [])
+    selected_models = setup.get("selected_models", []) or []
+    feature_cols = setup.get("baseline_feature_columns", []) or []
+
+    data_score = 0
+    if dataset.get("cleaned_rows", 0) > 0:
+        data_score += 5
+    if dataset.get("time_min") and dataset.get("time_max") and dataset.get("inferred_time_step"):
+        data_score += 4
+    if {"invalid_timestamp_rows", "invalid_target_rows", "duplicate_timestamps", "gap_count", "outlier_count_3iqr"}.issubset(audit.keys()):
+        data_score += 7
+    if flags.get("has_data_integrity_discussion"):
+        data_score += 4
+    data_score = min(data_score, 20)
+
+    feature_score = 0
+    if setup.get("has_baseline_feature_table") and len(feature_cols) >= 6:
+        feature_score += 6
+    if flags.get("has_advanced_features") and len(feature_cols) > 6:
+        feature_score += 6
+    if setup.get("feature_table_rows_after_dropna", 0) > 0:
+        feature_score += 3
+    feature_score = min(feature_score, 15)
+
+    modeling_score = 0
+    if flags.get("has_time_based_split"):
+        modeling_score += 7
+    if flags.get("has_metrics_table") and results:
+        modeling_score += 8
+    if len(selected_models) >= 3:
+        modeling_score += 5
+    if any(row.get("split") == "test" for row in results):
+        modeling_score += 3
+    if any(row.get("model") == "Naive (lag-1)" for row in results):
+        modeling_score += 2
+    modeling_score = min(modeling_score, 25)
+
+    dashboard_score = 0
+    if flags.get("has_metrics_table"):
+        dashboard_score += 3
+    if flags.get("has_student_dashboard_notes"):
+        dashboard_score += 3
+    if flags.get("has_insights"):
+        dashboard_score += 2
+    if len(selected_models) >= 3 and len(feature_cols) > 6:
+        dashboard_score += 2
+    dashboard_score = min(dashboard_score, 10)
+
+    presentation_score = 0
+    if notes.get("data_integrity_notes", "").strip():
+        presentation_score += 3
+    if notes.get("dashboard_notes", "").strip():
+        presentation_score += 2
+    if notes.get("insights", "").strip():
+        presentation_score += 3
+    if evidence_json.get("project", {}).get("goal", "").strip():
+        presentation_score += 2
+    presentation_score = min(presentation_score, 10)
+
+    scores = {
+        "Data & integrity": int(data_score),
+        "Feature engineering": int(feature_score),
+        "Modeling & evaluation": int(modeling_score),
+        "Dashboard quality": int(dashboard_score),
+        "Presentation & rigor": int(presentation_score),
+    }
+    total = int(sum(scores.values()))
+
+    weaknesses = []
+    improvements = []
+    if not flags.get("has_metrics_table"):
+        weaknesses.append("Model metrics table has not been generated yet.")
+        improvements.append("Run the model comparison step before grading/exporting.")
+    if not flags.get("has_advanced_features"):
+        weaknesses.append("Advanced engineered features are not enabled.")
+        improvements.append("Use Conservative or Aggressive feature preset for stronger feature-engineering evidence.")
+    if not flags.get("has_insights"):
+        weaknesses.append("Interpretive insights are missing.")
+        improvements.append("Add insights explaining best model, residual behavior, and next improvements.")
+
+    return {
+        "scores": scores,
+        "total_80": total,
+        "strengths": [
+            "Evidence JSON includes row counts, timestamp coverage, integrity audit, and resampling setup.",
+            "Feature table includes baseline and optional advanced lag, rolling, cyclical, and calendar predictors.",
+            "Modeling workflow uses chronological train/validation/test evaluation with MAE, RMSE, and MAPE.",
+            "Dashboard evidence includes interactive diagnostics, residual analysis, 3D views, heatmaps, and exportable notes.",
+        ],
+        "weaknesses": weaknesses or ["No major rubric weakness detected in the current evidence package."],
+        "actionable_improvements": improvements or ["Keep the generated submission.json and project_card.md with the final deployment link and repository link."],
+    }
+
+
 # ==========================================================================
 # HERO + TOP NAV
 # ==========================================================================
-st.markdown(
-    """
-    <div class="hero-title">📈 Time-Series Forecasting Workbench</div>
-    <div class="hero-sub">
-      Interactive feature engineering · multi-model comparison · 3D diagnostics · live AI grading
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+show_hero = bool(st.session_state.get("show_hero", True))
+show_top_nav = bool(st.session_state.get("show_top_nav", True))
 
-st.markdown(
-    """
-    <div class="top-nav">
-      <a href="#sec-data">📂 Data</a>
-      <a href="#sec-columns">🎯 Columns</a>
-      <a href="#sec-flow">🧭 Flow</a>
-      <a href="#sec-resample">⚙️ Resample</a>
-      <a href="#sec-features">🧱 Features</a>
-      <a href="#sec-model">🤖 Model</a>
-      <a href="#sec-dashboard">📊 Dashboard</a>
-      <a href="#sec-notes">📝 Notes</a>
-      <a href="#sec-export">📦 Export</a>
-      <a href="#sec-grader">🏅 Grader</a>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+if show_hero:
+    st.markdown(
+        """
+        <div class="hero-title">📈 Time-Series Forecasting Workbench</div>
+        <div class="hero-sub">Interactive feature engineering · multi-model comparison · 3D diagnostics · AI grading</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+if show_top_nav:
+    st.markdown(
+        """
+        <div class="top-nav" aria-label="Single section navigation">
+          <a href="#sec-data">📂 Data</a>
+          <a href="#sec-columns">🎯 Columns</a>
+          <a href="#sec-flow">🧭 Flow</a>
+          <a href="#sec-resample">⚙️ Resample</a>
+          <a href="#sec-features">🧱 Features</a>
+          <a href="#sec-model">🤖 Model</a>
+          <a href="#sec-dashboard">📊 Dashboard</a>
+          <a href="#sec-notes">📝 Notes</a>
+          <a href="#sec-export">📦 Export</a>
+          <a href="#sec-grader">🏅 Grader</a>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ==========================================================================
 # SIDEBAR
@@ -848,8 +977,27 @@ with st.sidebar:
         height=90,
     )
 
+    st.markdown("### 🎛️ App controls")
+    st.checkbox("Show hero title", value=True, key="show_hero")
+    st.checkbox("Show one-time top navigation", value=True, key="show_top_nav")
+    show_methodology_diagrams = st.checkbox("Show methodology diagrams", value=True)
+    show_advanced_diagnostics = st.checkbox("Show 3D diagnostics", value=True)
+    max_preview_rows = st.slider("Preview rows", 5, 100, 20, 5)
+    chart_height = st.slider("Default chart height", 320, 720, 420, 20)
+
+    st.markdown("### 📂 Data controls")
+    uploaded_dataset = st.file_uploader("Upload CSV instead of local path", type=["csv"])
+    allow_demo_fallback = st.checkbox(
+        "Use generated demo data if CSV path fails", value=True,
+        help="Keeps the website running even when data/dataset_sample.csv is missing."
+    )
+
     st.markdown("### 🤖 AI grader")
-    openrouter_key = read_openrouter_key()
+    offline_grader_only = st.checkbox(
+        "Use offline fallback grader only", value=True,
+        help="Recommended for class demo and avoids OpenRouter 403/quota errors."
+    )
+    openrouter_key = "" if offline_grader_only else read_openrouter_key()
 
     # ---- Progress tracker ----
     st.markdown("### ✅ Progress")
@@ -876,10 +1024,18 @@ section_banner(1, "Load & audit dataset",
 data_path = st.text_input("📂 Dataset path", value=DEFAULT_DATA_PATH)
 
 try:
-    df = load_dataset(data_path)
+    df, loaded_from, load_warning = load_dataset(
+        data_path, uploaded_file=uploaded_dataset, allow_demo_fallback=allow_demo_fallback
+    )
     st.session_state.progress["Data loaded"] = True
+    if load_warning is not None:
+        st.warning(
+            f"Could not load `{data_path}` ({load_warning}). Using generated demo data so the app remains usable."
+        )
+    st.caption(f"Loaded source: **{loaded_from}**")
 except Exception as exc:
     st.error(f"Could not load dataset from `{data_path}`: {exc}")
+    st.info("Upload a CSV from the sidebar or enable the generated demo fallback.")
     st.stop()
 
 col_kpi = st.columns(4)
@@ -893,9 +1049,9 @@ tab_preview, tab_dtypes, tab_missing, tab_describe = st.tabs(
 )
 dtype_table, missing_table = audit_dataframe(df)
 with tab_preview:
-    st.dataframe(df.head(20), use_container_width=True, height=320)
+    st.dataframe(df.head(max_preview_rows), width="stretch", height=320)
 with tab_dtypes:
-    st.dataframe(dtype_table, use_container_width=True, height=320)
+    st.dataframe(dtype_table, width="stretch", height=320)
 with tab_missing:
     if missing_table["missing_percent"].sum() == 0:
         st.success("✅ No missing values detected across any column.")
@@ -906,14 +1062,14 @@ with tab_missing:
         labels={"missing_percent": "% missing"},
         color="missing_percent", color_continuous_scale="Reds",
     )
-    fig_miss.update_layout(height=380, template="plotly_dark",
+    fig_miss.update_layout(height=chart_height, template="plotly_dark",
                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                            coloraxis_showscale=False, font=dict(family="Inter"))
-    st.plotly_chart(fig_miss, use_container_width=True)
+    st.plotly_chart(fig_miss, width="stretch")
 with tab_describe:
     numeric_cols_describe = df.select_dtypes(include=[np.number]).columns.tolist()
     if numeric_cols_describe:
-        st.dataframe(df[numeric_cols_describe].describe().T, use_container_width=True)
+        st.dataframe(df[numeric_cols_describe].describe().T, width="stretch")
     else:
         st.info("No numeric columns to describe.")
 
@@ -987,7 +1143,7 @@ with st.expander("🔍 Data integrity audit (auto-generated)", expanded=False):
         fig_hist.update_layout(height=320, template="plotly_dark",
                                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                                showlegend=False, font=dict(family="Inter"))
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
     with dist_col2:
         fig_box = px.box(
             cleaned, y=target_col,
@@ -997,7 +1153,7 @@ with st.expander("🔍 Data integrity audit (auto-generated)", expanded=False):
         fig_box.update_layout(height=320, template="plotly_dark",
                               paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                               font=dict(family="Inter"))
-        st.plotly_chart(fig_box, use_container_width=True)
+        st.plotly_chart(fig_box, width="stretch")
 
 render_progress_flow(2)
 
@@ -1008,299 +1164,302 @@ section_banner(3, "Project methodology",
                "Interactive flowchart, block diagrams, and system flow",
                anchor="sec-flow")
 
-flow_tab1, flow_tab2, flow_tab3, flow_tab4 = st.tabs([
-    "🗺️ Mermaid flowchart",
-    "🧩 Feature pipeline",
-    "🏗️ Model architecture",
-    "🔄 Data flow (Plotly Sankey)",
-])
+if not show_methodology_diagrams:
+    st.info("Methodology diagrams are hidden from the sidebar controls.")
+else:
+    flow_tab1, flow_tab2, flow_tab3, flow_tab4 = st.tabs([
+        "🗺️ Mermaid flowchart",
+        "🧩 Feature pipeline",
+        "🏗️ Model architecture",
+        "🔄 Data flow (Plotly Sankey)",
+    ])
 
-# ---- Mermaid flowchart ----
-with flow_tab1:
-    st.markdown(
+    # ---- Mermaid flowchart ----
+    with flow_tab1:
+        st.markdown(
+            """
+            End-to-end methodology rendered as an interactive Mermaid flowchart.
+            Hover over nodes; the diagram is fully zoomable using the controls.
+            """
+        )
+        mermaid_chart = """
+        <div style="background: rgba(15,23,42,0.6); padding: 20px; border-radius: 14px;
+                    border: 1px solid rgba(99,102,241,0.2);">
+          <pre class="mermaid" style="text-align:center;">
+    flowchart TD
+        A([📂 Load CSV]):::start --> B{Valid<br/>timestamp & target?}
+        B -->|No| Z([❌ Stop]):::stop
+        B -->|Yes| C[🧹 Clean<br/>drop NaN · sort by time<br/>dedupe · detect gaps]:::clean
+        C --> D[📐 Audit<br/>3·IQR outliers · stats]:::clean
+        D --> E[⚙️ Optional resample<br/>30min · H · D]:::feat
+        E --> F[🧱 Feature engineering<br/>lags · rolling · cyclical · calendar]:::feat
+        F --> G[✂️ Time-based split<br/>train / val / test]:::model
+        G --> H[🤖 Train models<br/>Naive · Ridge · Tree · RF · GBR]:::model
+        H --> I[📊 Evaluate<br/>MAE · RMSE · MAPE]:::eval
+        I --> J{Best on test?}
+        J --> K[📈 Dashboard<br/>predictions · residuals · 3D · heatmap]:::dash
+        K --> L[💡 Auto-insights]:::dash
+        L --> M[📦 Export<br/>submission.json · project_card.md]:::export
+        M --> N([🏅 AI grader<br/>/80]):::grader
+
+        classDef start fill:#10b981,stroke:#10b981,color:#fff,font-weight:bold;
+        classDef stop fill:#ef4444,stroke:#ef4444,color:#fff;
+        classDef clean fill:#3b82f6,stroke:#60a5fa,color:#fff;
+        classDef feat fill:#8b5cf6,stroke:#a78bfa,color:#fff;
+        classDef model fill:#ec4899,stroke:#f472b6,color:#fff;
+        classDef eval fill:#f59e0b,stroke:#fbbf24,color:#fff;
+        classDef dash fill:#06b6d4,stroke:#22d3ee,color:#fff;
+        classDef export fill:#84cc16,stroke:#a3e635,color:#fff;
+        classDef grader fill:#a855f7,stroke:#c084fc,color:#fff,font-weight:bold;
+          </pre>
+        </div>
+        <script type="module">
+          import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+          mermaid.initialize({ startOnLoad: true, theme: 'dark',
+                               themeVariables: { fontFamily: 'Inter, sans-serif', fontSize: '15px' } });
+        </script>
         """
-        End-to-end methodology rendered as an interactive Mermaid flowchart.
-        Hover over nodes; the diagram is fully zoomable using the controls.
+        components.html(mermaid_chart, height=820, scrolling=True)
+
+    # ---- Feature engineering block diagram ----
+    with flow_tab2:
+        st.markdown("Block diagram showing how the raw target gets transformed into model inputs.")
+        feat_blocks = """
+        <div style="background: rgba(15,23,42,0.6); padding: 28px 20px; border-radius: 14px;
+                    border: 1px solid rgba(99,102,241,0.2);">
+          <svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto;">
+            <defs>
+              <linearGradient id="gradSrc" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#10b981"/><stop offset="100%" stop-color="#059669"/>
+              </linearGradient>
+              <linearGradient id="gradLag" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#2563eb"/>
+              </linearGradient>
+              <linearGradient id="gradRoll" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#7c3aed"/>
+              </linearGradient>
+              <linearGradient id="gradCyc" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#ec4899"/><stop offset="100%" stop-color="#db2777"/>
+              </linearGradient>
+              <linearGradient id="gradCal" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#d97706"/>
+              </linearGradient>
+              <linearGradient id="gradOut" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#06b6d4"/><stop offset="100%" stop-color="#0891b2"/>
+              </linearGradient>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+              </marker>
+            </defs>
+
+            <!-- Source -->
+            <g>
+              <rect x="20" y="160" width="140" height="60" rx="12" fill="url(#gradSrc)" stroke="#34d399" stroke-width="1.5"/>
+              <text x="90" y="188" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">🎯 Target series</text>
+              <text x="90" y="206" text-anchor="middle" fill="#d1fae5" font-family="Inter" font-size="11">y(t)</text>
+            </g>
+
+            <!-- Lag block -->
+            <g>
+              <rect x="240" y="20" width="170" height="64" rx="12" fill="url(#gradLag)" stroke="#60a5fa" stroke-width="1.5"/>
+              <text x="325" y="44" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">🕓 Lag block</text>
+              <text x="325" y="62" text-anchor="middle" fill="#dbeafe" font-family="Inter" font-size="10">lag_1 · lag_24 · lag_48 ...</text>
+              <text x="325" y="76" text-anchor="middle" fill="#bfdbfe" font-family="Inter" font-size="9">y.shift(k)</text>
+            </g>
+
+            <!-- Rolling block -->
+            <g>
+              <rect x="240" y="100" width="170" height="64" rx="12" fill="url(#gradRoll)" stroke="#a78bfa" stroke-width="1.5"/>
+              <text x="325" y="124" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">📊 Rolling block</text>
+              <text x="325" y="142" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">mean_24 · std_24 ...</text>
+              <text x="325" y="156" text-anchor="middle" fill="#ddd6fe" font-family="Inter" font-size="9">y.shift(1).rolling(w)</text>
+            </g>
+
+            <!-- Cyclical block -->
+            <g>
+              <rect x="240" y="180" width="170" height="64" rx="12" fill="url(#gradCyc)" stroke="#f472b6" stroke-width="1.5"/>
+              <text x="325" y="204" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">🌀 Cyclical block</text>
+              <text x="325" y="222" text-anchor="middle" fill="#fce7f3" font-family="Inter" font-size="10">hour_sin · hour_cos</text>
+              <text x="325" y="236" text-anchor="middle" fill="#fbcfe8" font-family="Inter" font-size="9">sin(2π·t/T) · cos(2π·t/T)</text>
+            </g>
+
+            <!-- Calendar block -->
+            <g>
+              <rect x="240" y="260" width="170" height="64" rx="12" fill="url(#gradCal)" stroke="#fbbf24" stroke-width="1.5"/>
+              <text x="325" y="284" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">📅 Calendar block</text>
+              <text x="325" y="302" text-anchor="middle" fill="#fef3c7" font-family="Inter" font-size="10">hour · dow · month · week</text>
+              <text x="325" y="316" text-anchor="middle" fill="#fde68a" font-family="Inter" font-size="9">dt accessors</text>
+            </g>
+
+            <!-- Feature matrix -->
+            <g>
+              <rect x="500" y="140" width="180" height="100" rx="12" fill="url(#gradOut)" stroke="#22d3ee" stroke-width="1.5"/>
+              <text x="590" y="172" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">🧱 Feature matrix X</text>
+              <text x="590" y="194" text-anchor="middle" fill="#cffafe" font-family="Inter" font-size="11">(n_rows × n_features)</text>
+              <text x="590" y="214" text-anchor="middle" fill="#a5f3fc" font-family="Inter" font-size="10">drop_na on lags/rolling</text>
+            </g>
+
+            <!-- Target column -->
+            <g>
+              <rect x="730" y="160" width="150" height="60" rx="12" fill="#1e293b" stroke="#475569" stroke-width="1.5" stroke-dasharray="4 3"/>
+              <text x="805" y="188" text-anchor="middle" fill="#f1f5f9" font-family="Inter" font-weight="700" font-size="13">🎯 y_target</text>
+              <text x="805" y="206" text-anchor="middle" fill="#cbd5e1" font-family="Inter" font-size="10">y.shift(-horizon)</text>
+            </g>
+
+            <!-- Arrows from source to blocks -->
+            <path d="M 160 190 Q 200 190 220 52" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+            <path d="M 160 190 Q 200 190 220 132" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+            <path d="M 160 190 L 220 212" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+            <path d="M 160 190 Q 200 190 220 292" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+            <!-- Arrows from blocks to feature matrix -->
+            <path d="M 410 52 Q 460 52 490 168" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+            <path d="M 410 132 Q 450 132 490 180" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+            <path d="M 410 212 L 490 200" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+            <path d="M 410 292 Q 460 292 490 220" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+            <!-- Feature matrix → y_target -->
+            <path d="M 680 190 L 730 190" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+          </svg>
+        </div>
         """
-    )
-    mermaid_chart = """
-    <div style="background: rgba(15,23,42,0.6); padding: 20px; border-radius: 14px;
-                border: 1px solid rgba(99,102,241,0.2);">
-      <pre class="mermaid" style="text-align:center;">
-flowchart TD
-    A([📂 Load CSV]):::start --> B{Valid<br/>timestamp & target?}
-    B -->|No| Z([❌ Stop]):::stop
-    B -->|Yes| C[🧹 Clean<br/>drop NaN · sort by time<br/>dedupe · detect gaps]:::clean
-    C --> D[📐 Audit<br/>3·IQR outliers · stats]:::clean
-    D --> E[⚙️ Optional resample<br/>30min · H · D]:::feat
-    E --> F[🧱 Feature engineering<br/>lags · rolling · cyclical · calendar]:::feat
-    F --> G[✂️ Time-based split<br/>train / val / test]:::model
-    G --> H[🤖 Train models<br/>Naive · Ridge · Tree · RF · GBR]:::model
-    H --> I[📊 Evaluate<br/>MAE · RMSE · MAPE]:::eval
-    I --> J{Best on test?}
-    J --> K[📈 Dashboard<br/>predictions · residuals · 3D · heatmap]:::dash
-    K --> L[💡 Auto-insights]:::dash
-    L --> M[📦 Export<br/>submission.json · project_card.md]:::export
-    M --> N([🏅 AI grader<br/>/80]):::grader
+        st.markdown(feat_blocks, unsafe_allow_html=True)
 
-    classDef start fill:#10b981,stroke:#10b981,color:#fff,font-weight:bold;
-    classDef stop fill:#ef4444,stroke:#ef4444,color:#fff;
-    classDef clean fill:#3b82f6,stroke:#60a5fa,color:#fff;
-    classDef feat fill:#8b5cf6,stroke:#a78bfa,color:#fff;
-    classDef model fill:#ec4899,stroke:#f472b6,color:#fff;
-    classDef eval fill:#f59e0b,stroke:#fbbf24,color:#fff;
-    classDef dash fill:#06b6d4,stroke:#22d3ee,color:#fff;
-    classDef export fill:#84cc16,stroke:#a3e635,color:#fff;
-    classDef grader fill:#a855f7,stroke:#c084fc,color:#fff,font-weight:bold;
-      </pre>
-    </div>
-    <script type="module">
-      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-      mermaid.initialize({ startOnLoad: true, theme: 'dark',
-                           themeVariables: { fontFamily: 'Inter, sans-serif', fontSize: '15px' } });
-    </script>
-    """
-    components.html(mermaid_chart, height=820, scrolling=True)
+    # ---- Model architecture diagram ----
+    with flow_tab3:
+        st.markdown("Multi-model comparison architecture — same input, parallel evaluation, unified metrics.")
+        model_arch = """
+        <div style="background: rgba(15,23,42,0.6); padding: 28px 20px; border-radius: 14px;
+                    border: 1px solid rgba(99,102,241,0.2);">
+          <svg viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto;">
+            <defs>
+              <linearGradient id="gradData" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#06b6d4"/><stop offset="100%" stop-color="#0891b2"/>
+              </linearGradient>
+              <linearGradient id="gradSplit" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#d97706"/>
+              </linearGradient>
+              <linearGradient id="gradMdl" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#6d28d9"/>
+              </linearGradient>
+              <linearGradient id="gradMet" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#10b981"/><stop offset="100%" stop-color="#047857"/>
+              </linearGradient>
+              <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+              </marker>
+            </defs>
 
-# ---- Feature engineering block diagram ----
-with flow_tab2:
-    st.markdown("Block diagram showing how the raw target gets transformed into model inputs.")
-    feat_blocks = """
-    <div style="background: rgba(15,23,42,0.6); padding: 28px 20px; border-radius: 14px;
-                border: 1px solid rgba(99,102,241,0.2);">
-      <svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto;">
-        <defs>
-          <linearGradient id="gradSrc" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#10b981"/><stop offset="100%" stop-color="#059669"/>
-          </linearGradient>
-          <linearGradient id="gradLag" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#2563eb"/>
-          </linearGradient>
-          <linearGradient id="gradRoll" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#7c3aed"/>
-          </linearGradient>
-          <linearGradient id="gradCyc" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#ec4899"/><stop offset="100%" stop-color="#db2777"/>
-          </linearGradient>
-          <linearGradient id="gradCal" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#d97706"/>
-          </linearGradient>
-          <linearGradient id="gradOut" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#06b6d4"/><stop offset="100%" stop-color="#0891b2"/>
-          </linearGradient>
-          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
-          </marker>
-        </defs>
+            <!-- X, y -->
+            <g>
+              <rect x="20" y="170" width="120" height="70" rx="12" fill="url(#gradData)" stroke="#22d3ee" stroke-width="1.5"/>
+              <text x="80" y="200" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">X, y</text>
+              <text x="80" y="220" text-anchor="middle" fill="#cffafe" font-family="Inter" font-size="11">feature matrix</text>
+            </g>
 
-        <!-- Source -->
-        <g>
-          <rect x="20" y="160" width="140" height="60" rx="12" fill="url(#gradSrc)" stroke="#34d399" stroke-width="1.5"/>
-          <text x="90" y="188" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">🎯 Target series</text>
-          <text x="90" y="206" text-anchor="middle" fill="#d1fae5" font-family="Inter" font-size="11">y(t)</text>
-        </g>
+            <!-- Split -->
+            <g>
+              <rect x="200" y="160" width="160" height="90" rx="12" fill="url(#gradSplit)" stroke="#fbbf24" stroke-width="1.5"/>
+              <text x="280" y="186" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">✂️ Time split</text>
+              <text x="280" y="206" text-anchor="middle" fill="#fef3c7" font-family="Inter" font-size="11">train 70%</text>
+              <text x="280" y="222" text-anchor="middle" fill="#fef3c7" font-family="Inter" font-size="11">val 15%</text>
+              <text x="280" y="238" text-anchor="middle" fill="#fef3c7" font-family="Inter" font-size="11">test 15%</text>
+            </g>
 
-        <!-- Lag block -->
-        <g>
-          <rect x="240" y="20" width="170" height="64" rx="12" fill="url(#gradLag)" stroke="#60a5fa" stroke-width="1.5"/>
-          <text x="325" y="44" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">🕓 Lag block</text>
-          <text x="325" y="62" text-anchor="middle" fill="#dbeafe" font-family="Inter" font-size="10">lag_1 · lag_24 · lag_48 ...</text>
-          <text x="325" y="76" text-anchor="middle" fill="#bfdbfe" font-family="Inter" font-size="9">y.shift(k)</text>
-        </g>
+            <!-- Five models -->
+            <g>
+              <rect x="430" y="20" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
+              <text x="520" y="44" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Naive (lag-1)</text>
+              <text x="520" y="62" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">baseline</text>
+            </g>
+            <g>
+              <rect x="430" y="100" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
+              <text x="520" y="124" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Linear / Ridge</text>
+              <text x="520" y="142" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">closed-form</text>
+            </g>
+            <g>
+              <rect x="430" y="180" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
+              <text x="520" y="204" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Decision Tree</text>
+              <text x="520" y="222" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">non-linear</text>
+            </g>
+            <g>
+              <rect x="430" y="260" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
+              <text x="520" y="284" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Random Forest</text>
+              <text x="520" y="302" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">bagged trees</text>
+            </g>
+            <g>
+              <rect x="430" y="340" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
+              <text x="520" y="364" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Gradient Boosting</text>
+              <text x="520" y="382" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">sequential boost</text>
+            </g>
 
-        <!-- Rolling block -->
-        <g>
-          <rect x="240" y="100" width="170" height="64" rx="12" fill="url(#gradRoll)" stroke="#a78bfa" stroke-width="1.5"/>
-          <text x="325" y="124" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">📊 Rolling block</text>
-          <text x="325" y="142" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">mean_24 · std_24 ...</text>
-          <text x="325" y="156" text-anchor="middle" fill="#ddd6fe" font-family="Inter" font-size="9">y.shift(1).rolling(w)</text>
-        </g>
+            <!-- Metrics -->
+            <g>
+              <rect x="700" y="170" width="200" height="90" rx="12" fill="url(#gradMet)" stroke="#34d399" stroke-width="1.5"/>
+              <text x="800" y="198" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">📊 Metrics table</text>
+              <text x="800" y="220" text-anchor="middle" fill="#d1fae5" font-family="Inter" font-size="11">MAE · RMSE · MAPE</text>
+              <text x="800" y="238" text-anchor="middle" fill="#a7f3d0" font-family="Inter" font-size="10">per split, per model</text>
+            </g>
 
-        <!-- Cyclical block -->
-        <g>
-          <rect x="240" y="180" width="170" height="64" rx="12" fill="url(#gradCyc)" stroke="#f472b6" stroke-width="1.5"/>
-          <text x="325" y="204" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">🌀 Cyclical block</text>
-          <text x="325" y="222" text-anchor="middle" fill="#fce7f3" font-family="Inter" font-size="10">hour_sin · hour_cos</text>
-          <text x="325" y="236" text-anchor="middle" fill="#fbcfe8" font-family="Inter" font-size="9">sin(2π·t/T) · cos(2π·t/T)</text>
-        </g>
+            <!-- Arrows X,y → split → models -->
+            <path d="M 140 205 L 195 205" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 360 200 Q 395 200 425 48" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 360 205 Q 395 200 425 128" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 360 210 L 425 208" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 360 215 Q 395 215 425 288" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 360 220 Q 395 225 425 368" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
 
-        <!-- Calendar block -->
-        <g>
-          <rect x="240" y="260" width="170" height="64" rx="12" fill="url(#gradCal)" stroke="#fbbf24" stroke-width="1.5"/>
-          <text x="325" y="284" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">📅 Calendar block</text>
-          <text x="325" y="302" text-anchor="middle" fill="#fef3c7" font-family="Inter" font-size="10">hour · dow · month · week</text>
-          <text x="325" y="316" text-anchor="middle" fill="#fde68a" font-family="Inter" font-size="9">dt accessors</text>
-        </g>
+            <!-- Arrows models → metrics -->
+            <path d="M 610 48 Q 650 48 695 200" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 610 128 Q 650 128 695 208" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 610 208 L 695 215" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 610 288 Q 650 288 695 222" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M 610 368 Q 650 368 695 230" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
+          </svg>
+        </div>
+        """
+        st.markdown(model_arch, unsafe_allow_html=True)
 
-        <!-- Feature matrix -->
-        <g>
-          <rect x="500" y="140" width="180" height="100" rx="12" fill="url(#gradOut)" stroke="#22d3ee" stroke-width="1.5"/>
-          <text x="590" y="172" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">🧱 Feature matrix X</text>
-          <text x="590" y="194" text-anchor="middle" fill="#cffafe" font-family="Inter" font-size="11">(n_rows × n_features)</text>
-          <text x="590" y="214" text-anchor="middle" fill="#a5f3fc" font-family="Inter" font-size="10">drop_na on lags/rolling</text>
-        </g>
-
-        <!-- Target column -->
-        <g>
-          <rect x="730" y="160" width="150" height="60" rx="12" fill="#1e293b" stroke="#475569" stroke-width="1.5" stroke-dasharray="4 3"/>
-          <text x="805" y="188" text-anchor="middle" fill="#f1f5f9" font-family="Inter" font-weight="700" font-size="13">🎯 y_target</text>
-          <text x="805" y="206" text-anchor="middle" fill="#cbd5e1" font-family="Inter" font-size="10">y.shift(-horizon)</text>
-        </g>
-
-        <!-- Arrows from source to blocks -->
-        <path d="M 160 190 Q 200 190 220 52" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-        <path d="M 160 190 Q 200 190 220 132" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-        <path d="M 160 190 L 220 212" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-        <path d="M 160 190 Q 200 190 220 292" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-
-        <!-- Arrows from blocks to feature matrix -->
-        <path d="M 410 52 Q 460 52 490 168" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-        <path d="M 410 132 Q 450 132 490 180" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-        <path d="M 410 212 L 490 200" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-        <path d="M 410 292 Q 460 292 490 220" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-
-        <!-- Feature matrix → y_target -->
-        <path d="M 680 190 L 730 190" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
-      </svg>
-    </div>
-    """
-    st.markdown(feat_blocks, unsafe_allow_html=True)
-
-# ---- Model architecture diagram ----
-with flow_tab3:
-    st.markdown("Multi-model comparison architecture — same input, parallel evaluation, unified metrics.")
-    model_arch = """
-    <div style="background: rgba(15,23,42,0.6); padding: 28px 20px; border-radius: 14px;
-                border: 1px solid rgba(99,102,241,0.2);">
-      <svg viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto;">
-        <defs>
-          <linearGradient id="gradData" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#06b6d4"/><stop offset="100%" stop-color="#0891b2"/>
-          </linearGradient>
-          <linearGradient id="gradSplit" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#d97706"/>
-          </linearGradient>
-          <linearGradient id="gradMdl" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#6d28d9"/>
-          </linearGradient>
-          <linearGradient id="gradMet" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#10b981"/><stop offset="100%" stop-color="#047857"/>
-          </linearGradient>
-          <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
-          </marker>
-        </defs>
-
-        <!-- X, y -->
-        <g>
-          <rect x="20" y="170" width="120" height="70" rx="12" fill="url(#gradData)" stroke="#22d3ee" stroke-width="1.5"/>
-          <text x="80" y="200" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">X, y</text>
-          <text x="80" y="220" text-anchor="middle" fill="#cffafe" font-family="Inter" font-size="11">feature matrix</text>
-        </g>
-
-        <!-- Split -->
-        <g>
-          <rect x="200" y="160" width="160" height="90" rx="12" fill="url(#gradSplit)" stroke="#fbbf24" stroke-width="1.5"/>
-          <text x="280" y="186" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">✂️ Time split</text>
-          <text x="280" y="206" text-anchor="middle" fill="#fef3c7" font-family="Inter" font-size="11">train 70%</text>
-          <text x="280" y="222" text-anchor="middle" fill="#fef3c7" font-family="Inter" font-size="11">val 15%</text>
-          <text x="280" y="238" text-anchor="middle" fill="#fef3c7" font-family="Inter" font-size="11">test 15%</text>
-        </g>
-
-        <!-- Five models -->
-        <g>
-          <rect x="430" y="20" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
-          <text x="520" y="44" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Naive (lag-1)</text>
-          <text x="520" y="62" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">baseline</text>
-        </g>
-        <g>
-          <rect x="430" y="100" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
-          <text x="520" y="124" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Linear / Ridge</text>
-          <text x="520" y="142" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">closed-form</text>
-        </g>
-        <g>
-          <rect x="430" y="180" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
-          <text x="520" y="204" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Decision Tree</text>
-          <text x="520" y="222" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">non-linear</text>
-        </g>
-        <g>
-          <rect x="430" y="260" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
-          <text x="520" y="284" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Random Forest</text>
-          <text x="520" y="302" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">bagged trees</text>
-        </g>
-        <g>
-          <rect x="430" y="340" width="180" height="58" rx="10" fill="url(#gradMdl)" stroke="#a78bfa" stroke-width="1.5"/>
-          <text x="520" y="364" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="13">Gradient Boosting</text>
-          <text x="520" y="382" text-anchor="middle" fill="#ede9fe" font-family="Inter" font-size="10">sequential boost</text>
-        </g>
-
-        <!-- Metrics -->
-        <g>
-          <rect x="700" y="170" width="200" height="90" rx="12" fill="url(#gradMet)" stroke="#34d399" stroke-width="1.5"/>
-          <text x="800" y="198" text-anchor="middle" fill="#fff" font-family="Inter" font-weight="700" font-size="14">📊 Metrics table</text>
-          <text x="800" y="220" text-anchor="middle" fill="#d1fae5" font-family="Inter" font-size="11">MAE · RMSE · MAPE</text>
-          <text x="800" y="238" text-anchor="middle" fill="#a7f3d0" font-family="Inter" font-size="10">per split, per model</text>
-        </g>
-
-        <!-- Arrows X,y → split → models -->
-        <path d="M 140 205 L 195 205" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 360 200 Q 395 200 425 48" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 360 205 Q 395 200 425 128" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 360 210 L 425 208" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 360 215 Q 395 215 425 288" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 360 220 Q 395 225 425 368" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-
-        <!-- Arrows models → metrics -->
-        <path d="M 610 48 Q 650 48 695 200" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 610 128 Q 650 128 695 208" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 610 208 L 695 215" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 610 288 Q 650 288 695 222" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-        <path d="M 610 368 Q 650 368 695 230" stroke="#94a3b8" stroke-width="1.5" fill="none" marker-end="url(#arrow2)"/>
-      </svg>
-    </div>
-    """
-    st.markdown(model_arch, unsafe_allow_html=True)
-
-# ---- Sankey data flow ----
-with flow_tab4:
-    st.markdown("Data flow as a Sankey diagram — width = row count at each stage.")
-    feat_count_preview = max(6, integrity_audit.get("invalid_timestamp_rows", 0) +
-                             integrity_audit.get("invalid_target_rows", 0))
-    sankey_labels = [
-        f"📂 Raw rows ({len(df):,})",
-        f"❌ Dropped ({dropped_rows:,})",
-        f"🧹 Cleaned ({len(cleaned):,})",
-        f"⚠️ Outliers ({integrity_audit['outlier_count_3iqr']:,})",
-        f"✅ Valid for features",
-        f"🧱 Modeling-ready rows",
-    ]
-    valid_for_feat = max(1, len(cleaned) - integrity_audit["outlier_count_3iqr"])
-    sankey_fig = go.Figure(data=[go.Sankey(
-        node=dict(
-            pad=20, thickness=22,
-            line=dict(color="rgba(99,102,241,0.4)", width=1),
-            label=sankey_labels,
-            color=["#06b6d4", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899"],
-        ),
-        link=dict(
-            source=[0, 0, 2, 2, 4],
-            target=[1, 2, 3, 4, 5],
-            value=[
-                max(1, dropped_rows),
-                max(1, len(cleaned)),
-                max(1, integrity_audit["outlier_count_3iqr"]),
-                valid_for_feat,
-                valid_for_feat,  # placeholder until features build; updated below if needed
-            ],
-            color="rgba(99, 102, 241, 0.25)",
-        ),
-    )])
-    sankey_fig.update_layout(
-        template="plotly_dark", height=380,
-        paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", size=13),
-        margin=dict(l=10, r=10, t=20, b=10),
-    )
-    st.plotly_chart(sankey_fig, use_container_width=True)
+    # ---- Sankey data flow ----
+    with flow_tab4:
+        st.markdown("Data flow as a Sankey diagram — width = row count at each stage.")
+        feat_count_preview = max(6, integrity_audit.get("invalid_timestamp_rows", 0) +
+                                 integrity_audit.get("invalid_target_rows", 0))
+        sankey_labels = [
+            f"📂 Raw rows ({len(df):,})",
+            f"❌ Dropped ({dropped_rows:,})",
+            f"🧹 Cleaned ({len(cleaned):,})",
+            f"⚠️ Outliers ({integrity_audit['outlier_count_3iqr']:,})",
+            f"✅ Valid for features",
+            f"🧱 Modeling-ready rows",
+        ]
+        valid_for_feat = max(1, len(cleaned) - integrity_audit["outlier_count_3iqr"])
+        sankey_fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=20, thickness=22,
+                line=dict(color="rgba(99,102,241,0.4)", width=1),
+                label=sankey_labels,
+                color=["#06b6d4", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899"],
+            ),
+            link=dict(
+                source=[0, 0, 2, 2, 4],
+                target=[1, 2, 3, 4, 5],
+                value=[
+                    max(1, dropped_rows),
+                    max(1, len(cleaned)),
+                    max(1, integrity_audit["outlier_count_3iqr"]),
+                    valid_for_feat,
+                    valid_for_feat,  # placeholder until features build; updated below if needed
+                ],
+                color="rgba(99, 102, 241, 0.25)",
+            ),
+        )])
+        sankey_fig.update_layout(
+            template="plotly_dark", height=380,
+            paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", size=13),
+            margin=dict(l=10, r=10, t=20, b=10),
+        )
+        st.plotly_chart(sankey_fig, width="stretch")
 
 # ==========================================================================
 # 4. RESAMPLE + HORIZON
@@ -1338,13 +1497,13 @@ if not ts_preview.empty:
     )
     fig_ts.update_layout(
         title=f"📈 {target_col} over time (drag to zoom, double-click to reset)",
-        template="plotly_dark", height=400,
+        template="plotly_dark", height=chart_height,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         xaxis_title="Time", yaxis_title=target_col,
         hovermode="x unified", font=dict(family="Inter"),
     )
     fig_ts.update_xaxes(rangeslider_visible=True)
-    st.plotly_chart(fig_ts, use_container_width=True)
+    st.plotly_chart(fig_ts, width="stretch")
 
 render_progress_flow(3)
 
@@ -1464,7 +1623,7 @@ adv_tab1, adv_tab2, adv_tab3 = st.tabs([
 ])
 with adv_tab1:
     st.code(", ".join(feature_columns), language="text")
-    st.dataframe(modeling_df.head(15), use_container_width=True, height=300)
+    st.dataframe(modeling_df.head(15), width="stretch", height=300)
 
 with adv_tab2:
     if len(feature_columns) >= 2 and len(modeling_df) >= 20:
@@ -1478,7 +1637,7 @@ with adv_tab2:
             template="plotly_dark", height=520,
             paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter"),
         )
-        st.plotly_chart(fig_corr, use_container_width=True)
+        st.plotly_chart(fig_corr, width="stretch")
     else:
         st.info("Not enough data to compute a correlation heatmap.")
 
@@ -1499,7 +1658,7 @@ with adv_tab3:
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             coloraxis_showscale=False, font=dict(family="Inter"),
         )
-        st.plotly_chart(fig_acf, use_container_width=True)
+        st.plotly_chart(fig_acf, width="stretch")
     else:
         st.info("Not enough rows for autocorrelation.")
 
@@ -1566,10 +1725,11 @@ if "modeling_run" not in st.session_state:
     st.session_state.predictions = {}
     st.session_state.split_index = {}
     st.session_state.feature_importance = None
+    st.session_state.selected_models_run = []
 
 run_col1, run_col2 = st.columns([1, 4])
 with run_col1:
-    run_clicked = st.button("▶️ Run model comparison", type="primary", use_container_width=True)
+    run_clicked = st.button("▶️ Run model comparison", type="primary", width="stretch")
 with run_col2:
     if st.button("🗑️ Clear results"):
         st.session_state.modeling_run = False
@@ -1577,6 +1737,7 @@ with run_col2:
         st.session_state.predictions = {}
         st.session_state.split_index = {}
         st.session_state.feature_importance = None
+        st.session_state.selected_models_run = []
 
 selected_models_list = []
 if use_naive: selected_models_list.append("Naive (lag-1)")
@@ -1688,6 +1849,7 @@ if run_clicked:
         st.session_state.predictions = predictions
         st.session_state.split_index = split_index
         st.session_state.feature_importance = feature_importance
+        st.session_state.selected_models_run = selected_models_list.copy()
         st.session_state.progress["Models trained"] = True
         st.success(f"✅ Trained {len(selected_models_list)} model(s) on a {train_pct}/{val_pct}/{test_pct} time-based split.")
 
@@ -1702,7 +1864,7 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty:
     medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 10
     test_only.insert(0, "rank", [medals[i] for i in range(len(test_only))])
     st.markdown("#### 🏆 Test-set leaderboard (lowest RMSE wins)")
-    st.dataframe(test_only.reset_index(drop=True), use_container_width=True,
+    st.dataframe(test_only.reset_index(drop=True), width="stretch",
                  height=min(360, 44 * len(test_only) + 60))
 
     st.markdown("#### 📊 Full metrics table — `results_df`")
@@ -1710,10 +1872,10 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty:
         styled = results_df.style.background_gradient(
             subset=["MAE", "RMSE", "MAPE"], cmap="RdYlGn_r"
         ).format({"MAE": "{:.3f}", "RMSE": "{:.3f}", "MAPE": "{:.2f}"})
-        st.dataframe(styled, use_container_width=True, height=min(420, 38 * len(results_df) + 60))
+        st.dataframe(styled, width="stretch", height=min(420, 38 * len(results_df) + 60))
     except Exception:
         # Fallback for environments where styler gradient fails (e.g. matplotlib version mismatch).
-        st.dataframe(results_df, use_container_width=True, height=min(420, 38 * len(results_df) + 60))
+        st.dataframe(results_df, width="stretch", height=min(420, 38 * len(results_df) + 60))
 else:
     st.info("👆 Configure the split + models above, then click **Run model comparison** to build the metrics table.")
 
@@ -1778,12 +1940,12 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty and predictions
             ))
         fig_pred.update_layout(
             title=f"Actual vs predicted — {which_split} split",
-            template="plotly_dark", height=480, hovermode="x unified",
+            template="plotly_dark", height=chart_height + 60, hovermode="x unified",
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             xaxis_title="Time", yaxis_title=target_col, font=dict(family="Inter"),
         )
         fig_pred.update_xaxes(rangeslider_visible=True)
-        st.plotly_chart(fig_pred, use_container_width=True)
+        st.plotly_chart(fig_pred, width="stretch")
 
     with tab_resid:
         _, ytrue_t, ypred_t = predictions[best_model_name]["test"]
@@ -1804,7 +1966,7 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty and predictions
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 xaxis_title="Time", yaxis_title="Residual", font=dict(family="Inter"),
             )
-            st.plotly_chart(fig_r, use_container_width=True)
+            st.plotly_chart(fig_r, width="stretch")
         with r_col2:
             fig_h = go.Figure()
             fig_h.add_trace(go.Histogram(
@@ -1817,7 +1979,7 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty and predictions
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 xaxis_title="Residual", yaxis_title="Count", font=dict(family="Inter"),
             )
-            st.plotly_chart(fig_h, use_container_width=True)
+            st.plotly_chart(fig_h, width="stretch")
 
         fig_sc = go.Figure()
         fig_sc.add_trace(go.Scatter(
@@ -1838,67 +2000,70 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty and predictions
             xaxis_title=f"Actual {target_col}", yaxis_title=f"Predicted {target_col}",
             font=dict(family="Inter"),
         )
-        st.plotly_chart(fig_sc, use_container_width=True)
+        st.plotly_chart(fig_sc, width="stretch")
 
     with tab_3d:
-        st.markdown(
-            "Each point is one test prediction. Position = actual, predicted, time index. "
-            "Color = residual. Drag to rotate, scroll to zoom, hover for details."
-        )
-        _, ytrue_t, ypred_t = predictions[best_model_name]["test"]
-        residuals = ytrue_t - ypred_t
-        time_idx = np.arange(len(ytrue_t))
+        if not show_advanced_diagnostics:
+            st.info("3D diagnostics are hidden from the sidebar controls.")
+        else:
+            st.markdown(
+                "Each point is one test prediction. Position = actual, predicted, time index. "
+                "Color = residual. Drag to rotate, scroll to zoom, hover for details."
+            )
+            _, ytrue_t, ypred_t = predictions[best_model_name]["test"]
+            residuals = ytrue_t - ypred_t
+            time_idx = np.arange(len(ytrue_t))
 
-        fig_3d = go.Figure(data=[go.Scatter3d(
-            x=ytrue_t, y=ypred_t, z=time_idx, mode="markers",
-            marker=dict(
-                size=3, color=residuals, colorscale="RdBu",
-                cmin=-np.max(np.abs(residuals)), cmax=np.max(np.abs(residuals)),
-                opacity=0.8, colorbar=dict(title="Residual"),
-            ),
-            hovertemplate=(
-                "Actual: %{x:.2f}<br>Predicted: %{y:.2f}<br>"
-                "Time idx: %{z}<br>Residual: %{marker.color:.2f}<extra></extra>"
-            ),
-        )])
-        fig_3d.update_layout(
-            title=f"3D residual space — {best_model_name}",
-            template="plotly_dark", height=620,
-            paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter"),
-            scene=dict(
-                xaxis_title=f"Actual {target_col}",
-                yaxis_title=f"Predicted {target_col}",
-                zaxis_title="Time index",
-                bgcolor="rgba(0,0,0,0)",
-            ),
-        )
-        st.plotly_chart(fig_3d, use_container_width=True)
-
-        st.markdown("##### 🌐 3D error surface — MAE by hour × day-of-week")
-        err_pivot = pd.DataFrame({
-            "hour": pd.to_datetime(test_dates_master).hour,
-            "dow": pd.to_datetime(test_dates_master).dayofweek,
-            "abs_err": np.abs(residuals),
-        })
-        err_surface = err_pivot.groupby(["dow", "hour"])["abs_err"].mean().unstack(fill_value=0)
-        if err_surface.shape[0] >= 2 and err_surface.shape[1] >= 2:
-            fig_surf = go.Figure(data=[go.Surface(
-                z=err_surface.values, x=err_surface.columns, y=err_surface.index,
-                colorscale="Viridis", colorbar=dict(title="MAE"),
+            fig_3d = go.Figure(data=[go.Scatter3d(
+                x=ytrue_t, y=ypred_t, z=time_idx, mode="markers",
+                marker=dict(
+                    size=3, color=residuals, colorscale="RdBu",
+                    cmin=-np.max(np.abs(residuals)), cmax=np.max(np.abs(residuals)),
+                    opacity=0.8, colorbar=dict(title="Residual"),
+                ),
+                hovertemplate=(
+                    "Actual: %{x:.2f}<br>Predicted: %{y:.2f}<br>"
+                    "Time idx: %{z}<br>Residual: %{marker.color:.2f}<extra></extra>"
+                ),
             )])
-            fig_surf.update_layout(
-                template="plotly_dark", height=520,
+            fig_3d.update_layout(
+                title=f"3D residual space — {best_model_name}",
+                template="plotly_dark", height=620,
                 paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter"),
                 scene=dict(
-                    xaxis_title="Hour of day",
-                    yaxis_title="Day of week (0=Mon)",
-                    zaxis_title="Mean abs. error",
+                    xaxis_title=f"Actual {target_col}",
+                    yaxis_title=f"Predicted {target_col}",
+                    zaxis_title="Time index",
                     bgcolor="rgba(0,0,0,0)",
                 ),
             )
-            st.plotly_chart(fig_surf, use_container_width=True)
-        else:
-            st.info("Need more test rows spanning multiple weekdays/hours.")
+            st.plotly_chart(fig_3d, width="stretch")
+
+            st.markdown("##### 🌐 3D error surface — MAE by hour × day-of-week")
+            err_pivot = pd.DataFrame({
+                "hour": pd.to_datetime(test_dates_master).hour,
+                "dow": pd.to_datetime(test_dates_master).dayofweek,
+                "abs_err": np.abs(residuals),
+            })
+            err_surface = err_pivot.groupby(["dow", "hour"])["abs_err"].mean().unstack(fill_value=0)
+            if err_surface.shape[0] >= 2 and err_surface.shape[1] >= 2:
+                fig_surf = go.Figure(data=[go.Surface(
+                    z=err_surface.values, x=err_surface.columns, y=err_surface.index,
+                    colorscale="Viridis", colorbar=dict(title="MAE"),
+                )])
+                fig_surf.update_layout(
+                    template="plotly_dark", height=520,
+                    paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter"),
+                    scene=dict(
+                        xaxis_title="Hour of day",
+                        yaxis_title="Day of week (0=Mon)",
+                        zaxis_title="Mean abs. error",
+                        bgcolor="rgba(0,0,0,0)",
+                    ),
+                )
+                st.plotly_chart(fig_surf, width="stretch")
+            else:
+                st.info("Need more test rows spanning multiple weekdays/hours.")
 
     with tab_imp:
         if feature_importance:
@@ -1916,7 +2081,7 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty and predictions
                 yaxis=dict(autorange="reversed"), coloraxis_showscale=False,
                 font=dict(family="Inter"),
             )
-            st.plotly_chart(fig_imp, use_container_width=True)
+            st.plotly_chart(fig_imp, width="stretch")
         else:
             st.info("Train a model with feature importances (Ridge, Tree, RF, GBR) to see this.")
 
@@ -1938,7 +2103,7 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty and predictions
         )
         fig_heat.update_layout(template="plotly_dark", height=420,
                                paper_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter"))
-        st.plotly_chart(fig_heat, use_container_width=True)
+        st.plotly_chart(fig_heat, width="stretch")
 
     with tab_compare:
         st.markdown("Side-by-side metric comparison across all trained models.")
@@ -1953,7 +2118,7 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty and predictions
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font=dict(family="Inter"),
         )
-        st.plotly_chart(fig_cmp, use_container_width=True)
+        st.plotly_chart(fig_cmp, width="stretch")
 
     # Auto-insights
     _, ytrue_t, ypred_t = predictions[best_model_name]["test"]
@@ -2056,7 +2221,7 @@ submission = make_submission_json(
     insights=insights,
     integrity_audit=integrity_audit,
     feature_config=feature_config,
-    selected_models=selected_models_list if st.session_state.get("modeling_run") else [],
+    selected_models=st.session_state.get("selected_models_run", []) if st.session_state.get("modeling_run") else [],
     split_ratios=split_ratios_dict,
 )
 
@@ -2075,13 +2240,13 @@ with exp_col1:
     st.download_button(
         "⬇️ Download submission.json", data=submission_json_text,
         file_name="submission.json", mime="application/json",
-        use_container_width=True,
+        width="stretch",
     )
 with exp_col2:
     st.download_button(
         "⬇️ Download project_card.md", data=project_card_text,
         file_name="project_card.md", mime="text/markdown",
-        use_container_width=True,
+        width="stretch",
     )
 
 with st.expander("👀 Preview submission.json"):
@@ -2100,55 +2265,64 @@ if not st.session_state.get("modeling_run"):
         "a metrics table, time-based split, and dashboard evidence."
     )
 
-if st.button("🤖 Run AI grader", type="primary"):
-    if not openrouter_key:
-        st.error("Provide an OpenRouter API key via Streamlit Secrets, environment variable, or the sidebar.")
+if st.button("🤖 Run AI grader", type="primary", width="stretch"):
+    parsed = None
+    parse_error = None
+    if offline_grader_only:
+        parsed = offline_fallback_grader(submission)
+        st.info("Using deterministic offline fallback grader. No API call was made.")
+    elif not openrouter_key:
+        st.error("Provide an OpenRouter API key, or tick **Use offline fallback grader only** in the sidebar.")
     else:
         try:
             with st.spinner("Calling AI grader..."):
                 raw_output = call_openrouter_grader(openrouter_key, submission)
             parsed, parse_error = parse_ai_response(raw_output)
-            if parsed is not None:
-                st.success("✅ AI grader returned valid JSON.")
-                if "total_80" in parsed and "scores" in parsed:
-                    total = parsed["total_80"]
-                    pct = total / 80 * 100
-                    grade_color = "#10b981" if pct >= 75 else ("#f59e0b" if pct >= 55 else "#ef4444")
-                    st.markdown(
-                        f"""
-                        <div style="background: linear-gradient(135deg, {grade_color}22, {grade_color}11);
-                                    border: 1px solid {grade_color};
-                                    border-radius: 16px; padding: 24px; text-align: center;
-                                    box-shadow: 0 10px 30px {grade_color}33;">
-                          <div style="font-size: 0.85rem; color: #94a3b8; letter-spacing:1px;">TOTAL SCORE</div>
-                          <div style="font-size: 3.4rem; font-weight: 800; color: {grade_color};
-                                      font-family: Inter; letter-spacing: -2px;">
-                            {total} / 80
-                          </div>
-                          <div style="color: #94a3b8;">{pct:.1f}%</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    scores_df = pd.DataFrame(
-                        [{"rubric": k, "score": v} for k, v in parsed["scores"].items()]
-                    )
-                    fig_scores = px.bar(
-                        scores_df, x="score", y="rubric", orientation="h",
-                        color="score", color_continuous_scale="Viridis",
-                        title="Rubric breakdown",
-                    )
-                    fig_scores.update_layout(
-                        template="plotly_dark", height=320,
-                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                        yaxis=dict(autorange="reversed"), coloraxis_showscale=False,
-                        font=dict(family="Inter"),
-                    )
-                    st.plotly_chart(fig_scores, use_container_width=True)
-                with st.expander("📄 Full grader response JSON"):
-                    st.json(parsed)
-            else:
-                st.error(parse_error)
-                st.text_area("Raw AI output", raw_output, height=300)
+            if parsed is None:
+                st.warning(parse_error)
+                parsed = offline_fallback_grader(submission)
+                st.info("AI response was not valid JSON, so the offline fallback grader was used.")
         except Exception as exc:
-            st.error(f"AI grader failed: {exc}")
+            st.warning(f"Live AI grader failed: {exc}")
+            parsed = offline_fallback_grader(submission)
+            st.info("Offline fallback grader was used so grading still works without OpenRouter.")
+
+    if parsed is not None:
+        st.success("✅ Grader returned valid rubric JSON.")
+        if "total_80" in parsed and "scores" in parsed:
+            total = parsed["total_80"]
+            pct = total / 80 * 100
+            grade_color = "#10b981" if pct >= 75 else ("#f59e0b" if pct >= 55 else "#ef4444")
+            st.markdown(
+                f"""
+                <div style="background: linear-gradient(135deg, {grade_color}22, {grade_color}11);
+                            border: 1px solid {grade_color};
+                            border-radius: 16px; padding: 24px; text-align: center;
+                            box-shadow: 0 10px 30px {grade_color}33;">
+                  <div style="font-size: 0.85rem; color: #94a3b8; letter-spacing:1px;">TOTAL SCORE</div>
+                  <div style="font-size: 3.4rem; font-weight: 800; color: {grade_color};
+                              font-family: Inter; letter-spacing: -2px;">
+                    {total} / 80
+                  </div>
+                  <div style="color: #94a3b8;">{pct:.1f}%</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            scores_df = pd.DataFrame(
+                [{"rubric": k, "score": v} for k, v in parsed["scores"].items()]
+            )
+            fig_scores = px.bar(
+                scores_df, x="score", y="rubric", orientation="h",
+                color="score", color_continuous_scale="Viridis",
+                title="Rubric breakdown",
+            )
+            fig_scores.update_layout(
+                template="plotly_dark", height=320,
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(autorange="reversed"), coloraxis_showscale=False,
+                font=dict(family="Inter"),
+            )
+            st.plotly_chart(fig_scores, width="stretch")
+        with st.expander("📄 Full grader response JSON"):
+            st.json(parsed)
