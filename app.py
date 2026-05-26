@@ -10,6 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -372,11 +373,10 @@ st.markdown(
 
 def section_banner(number, title: str, subtitle: str = "", anchor: str = ""):
     """Render a colorful section banner with optional HTML anchor."""
-    anchor_html = f'<a id="{anchor}"></a>' if anchor else ""
+    anchor_attr = f' id="{anchor}"' if anchor else ""
     st.markdown(
         f"""
-        {anchor_html}
-        <div class="section-banner">
+        <div class="section-banner"{anchor_attr}>
           <div class="num">{number}</div>
           <div class="body">
             {title}
@@ -1073,7 +1073,7 @@ flowchart TD
                            themeVariables: { fontFamily: 'Inter, sans-serif', fontSize: '15px' } });
     </script>
     """
-    st.components.v1.html(mermaid_chart, height=820, scrolling=True)
+    components.html(mermaid_chart, height=820, scrolling=True)
 
 # ---- Feature engineering block diagram ----
 with flow_tab2:
@@ -1326,8 +1326,8 @@ res_col1, res_col2 = st.columns([1, 1])
 with res_col1:
     resample_rule = st.selectbox(
         "Resampling rule",
-        options=["None", "30min", "H", "D"], index=0,
-        help="None = keep native frequency. H = hourly mean. D = daily mean.",
+        options=["None", "30min", "h", "D"], index=0,
+        help="None = keep native frequency. h = hourly mean. D = daily mean.",
     )
 with res_col2:
     horizon = st.number_input(
@@ -1392,9 +1392,19 @@ PRESET_CONFIGS = {
                           use_rolling_std=True, use_lag_diff=True,
                           use_cyclical_hour=True, use_cyclical_dow=True,
                           use_day_of_week=True, use_week_of_year=True),
-    "Custom":       None,  # user controls
+    "Custom":       None,
 }
 
+# Seed defaults the FIRST time only — don't overwrite the user's choices on rerun.
+_fe_keys_defaults = PRESET_CONFIGS["Aggressive"]
+for _k, _v in _fe_keys_defaults.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+# When a preset is chosen, push its values into session_state BEFORE the
+# checkboxes are instantiated. We then render the checkboxes with key= ONLY,
+# never key= + value= together (that combination raises StreamlitAPIException
+# when the key already exists in session_state).
 if preset != "Custom":
     cfg = PRESET_CONFIGS[preset]
     for k, v in cfg.items():
@@ -1414,22 +1424,22 @@ st.markdown(
 fe_col1, fe_col2, fe_col3 = st.columns(3)
 with fe_col1:
     st.markdown("**🕓 Extra lags**")
-    use_lag_48 = st.checkbox("lag_48 (1 day, half-hourly)", key="use_lag_48", value=st.session_state.get("use_lag_48", True))
-    use_lag_168 = st.checkbox("lag_168 (3.5 days)", key="use_lag_168", value=st.session_state.get("use_lag_168", False))
-    use_lag_336 = st.checkbox("lag_336 (1 week)", key="use_lag_336", value=st.session_state.get("use_lag_336", False))
+    use_lag_48 = st.checkbox("lag_48 (1 day, half-hourly)", key="use_lag_48")
+    use_lag_168 = st.checkbox("lag_168 (3.5 days)", key="use_lag_168")
+    use_lag_336 = st.checkbox("lag_336 (1 week)", key="use_lag_336")
 with fe_col2:
     st.markdown("**📊 Rolling windows**")
-    use_roll_6 = st.checkbox("rolling_mean_6", key="use_roll_6", value=st.session_state.get("use_roll_6", False))
-    use_roll_48 = st.checkbox("rolling_mean_48", key="use_roll_48", value=st.session_state.get("use_roll_48", True))
-    use_roll_168 = st.checkbox("rolling_mean_168", key="use_roll_168", value=st.session_state.get("use_roll_168", False))
-    use_rolling_std = st.checkbox("rolling_std_24", key="use_rolling_std", value=st.session_state.get("use_rolling_std", True))
+    use_roll_6 = st.checkbox("rolling_mean_6", key="use_roll_6")
+    use_roll_48 = st.checkbox("rolling_mean_48", key="use_roll_48")
+    use_roll_168 = st.checkbox("rolling_mean_168", key="use_roll_168")
+    use_rolling_std = st.checkbox("rolling_std_24", key="use_rolling_std")
 with fe_col3:
     st.markdown("**📅 Calendar & cyclical**")
-    use_cyclical_hour = st.checkbox("hour_sin / hour_cos", key="use_cyclical_hour", value=st.session_state.get("use_cyclical_hour", True))
-    use_cyclical_dow = st.checkbox("dow_sin / dow_cos", key="use_cyclical_dow", value=st.session_state.get("use_cyclical_dow", True))
-    use_day_of_week = st.checkbox("day_of_week (raw)", key="use_day_of_week", value=st.session_state.get("use_day_of_week", False))
-    use_week_of_year = st.checkbox("week_of_year", key="use_week_of_year", value=st.session_state.get("use_week_of_year", False))
-    use_lag_diff = st.checkbox("lag_1_diff (Δ)", key="use_lag_diff", value=st.session_state.get("use_lag_diff", False))
+    use_cyclical_hour = st.checkbox("hour_sin / hour_cos", key="use_cyclical_hour")
+    use_cyclical_dow = st.checkbox("dow_sin / dow_cos", key="use_cyclical_dow")
+    use_day_of_week = st.checkbox("day_of_week (raw)", key="use_day_of_week")
+    use_week_of_year = st.checkbox("week_of_year", key="use_week_of_year")
+    use_lag_diff = st.checkbox("lag_1_diff (Δ)", key="use_lag_diff")
 
 extra_lags = []
 if use_lag_48: extra_lags.append(48)
@@ -1709,10 +1719,14 @@ if isinstance(results_df, pd.DataFrame) and not results_df.empty:
                  height=min(360, 44 * len(test_only) + 60))
 
     st.markdown("#### 📊 Full metrics table — `results_df`")
-    styled = results_df.style.background_gradient(
-        subset=["MAE", "RMSE", "MAPE"], cmap="RdYlGn_r"
-    ).format({"MAE": "{:.3f}", "RMSE": "{:.3f}", "MAPE": "{:.2f}"})
-    st.dataframe(styled, use_container_width=True, height=min(420, 38 * len(results_df) + 60))
+    try:
+        styled = results_df.style.background_gradient(
+            subset=["MAE", "RMSE", "MAPE"], cmap="RdYlGn_r"
+        ).format({"MAE": "{:.3f}", "RMSE": "{:.3f}", "MAPE": "{:.2f}"})
+        st.dataframe(styled, use_container_width=True, height=min(420, 38 * len(results_df) + 60))
+    except Exception:
+        # Fallback for environments where styler gradient fails (e.g. matplotlib version mismatch).
+        st.dataframe(results_df, use_container_width=True, height=min(420, 38 * len(results_df) + 60))
 else:
     st.info("👆 Configure the split + models above, then click **Run model comparison** to build the metrics table.")
 
