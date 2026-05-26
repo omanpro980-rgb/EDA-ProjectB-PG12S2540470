@@ -1,6 +1,6 @@
 # EDA Mini Project B — Time-Series Forecasting Starter
 
-Student: Brahim Al Manwari  
+Student: Ibrahim Al Manwari  
 Student ID: PG12S2540470
 
 This repository contains a one-file Streamlit starter app for Mini Project B. The app stops at dataset loading, audit, timestamp/target selection, optional resampling, forecast horizon selection, baseline feature table creation, export files, and the fixed AI grader.
